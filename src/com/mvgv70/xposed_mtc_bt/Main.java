@@ -1,9 +1,11 @@
 package com.mvgv70.xposed_mtc_bt;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import android.util.Log;
 import de.robv.android.xposed.IXposedHookLoadPackage;
+import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XC_MethodReplacement;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
@@ -43,11 +45,69 @@ public class Main implements IXposedHookLoadPackage {
         return contact_name;
       }
     };
-	    
+    
+    // BlueToothActivity.updatePhoneBookFirstChar()
+    XC_MethodHook updatePhoneBookFirstChar = new XC_MethodHook() {
+        
+      @Override
+      protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+        Log.d(TAG,"updatePhoneBookFirstChar");
+        XposedHelpers.callMethod(param.thisObject, "assortPhoneBook");
+      }
+    };
+    
+    // PreferenceProc.assortPhoneBook()
+    XC_MethodReplacement assortPhoneBook = new XC_MethodReplacement() {
+        
+      @Override
+      protected Object replaceHookedMethod(MethodHookParam param) throws Throwable {
+        Log.d(TAG,"assortPhoneBook");
+        @SuppressWarnings("unchecked")
+		List<String> phoneBookList = (List<String>)XposedHelpers.getObjectField(param.thisObject, "phoneBookList");
+        Log.d(TAG,"phoneBookList.size="+phoneBookList.size());
+        if (phoneBookList.size() == 0) return null;
+        // отсортированный список
+        List<String> phoneBookListSorted = new ArrayList<String>();
+        // русские буквы
+        for (Character ch = 'ј'; ch <= 'я'; ch++)
+        {
+          for (String line : phoneBookList)
+            if (Character.toUpperCase(line.charAt(0)) == ch)
+              phoneBookListSorted.add(line);
+        }
+        // английские буквы
+        for (Character ch = 'A'; ch <= 'Z'; ch++)
+        {
+          for (String line : phoneBookList)
+            if (Character.toUpperCase(line.charAt(0)) == ch)
+              phoneBookListSorted.add(line);
+        }
+        // символы и цифры
+        for (Character ch = '!'; ch <= '9'; ch++)
+        {
+          for (String line : phoneBookList)
+            if (Character.toUpperCase(line.charAt(0)) == ch)
+              phoneBookListSorted.add(line);
+        if (phoneBookListSorted.size() < phoneBookList.size())
+        {
+          // добавим записи, которые не были добавлены
+          for (String line : phoneBookList)
+            if (!phoneBookListSorted.contains(line))
+              phoneBookListSorted.add(line);
+          }
+        }
+        // устанавливаем отсортированный список
+        XposedHelpers.setObjectField(param.thisObject, "phoneBookList", phoneBookListSorted);
+        return null;
+      }
+    };
+    
     // begin hooks
     if (!lpparam.packageName.equals("com.microntek.bluetooth")) return;
     XposedHelpers.findAndHookMethod("com.microntek.bluetooth.notification.btNotificationReceiver", lpparam.classLoader, "getNumName", List.class, String.class, getNumName);
     XposedHelpers.findAndHookMethod("com.microntek.bluetooth.BlueToothActivity", lpparam.classLoader, "getNameOfNumbers", String.class, getNameOfNumbers);
+    XposedHelpers.findAndHookMethod("com.microntek.bluetooth.BlueToothActivity", lpparam.classLoader, "assortPhoneBook", assortPhoneBook);
+    XposedHelpers.findAndHookMethod("com.microntek.bluetooth.BlueToothActivity", lpparam.classLoader, "updatePhoneBookFirstChar", updatePhoneBookFirstChar);
     Log.d(TAG,"com.microntek.bluetooth OK");
   }
   
