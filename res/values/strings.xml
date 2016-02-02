@@ -2,6 +2,6 @@
 
     <string name="app_name" translatable="false">XposedMtcBT</string>
     <string name="app_desc">Correct showing call number in microntek-devices</string>
-    <string name="app_version_name" translatable="false">1.3</string>
+    <string name="app_version_name" translatable="false">1.4</string>
 
 </resources>

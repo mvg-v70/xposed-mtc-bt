@@ -4,14 +4,19 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
+import com.mvgv70.utils.IniFile;
+
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
+import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.res.Resources;
+import android.os.Bundle;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.View.OnLongClickListener;
 import android.widget.TableLayout;
 import android.widget.TableRow;
 import android.widget.TextView;
@@ -24,12 +29,19 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 public class Main implements IXposedHookLoadPackage {
 	
   private final static int NUMBER_LEN = 10;
-  private final static String TAG = "xposed-mtc-bt";
   private static Activity btActivity;
+  private static Context context;
   private static boolean phoneBookSorted = false;
   private static Object phonebookFragment;
+  private static Object dialFragment;
   private static keyboardDialog kbDialog = null;
   private static List<Character> enabledChars = new ArrayList<Character>();
+  private static IniFile props = new IniFile();
+  private static final String EXTERNAL_SD = "/mnt/external_sd/";
+  private static final String INI_DIR = "mtc-bt";
+  private static final String INI_FILE_NAME = EXTERNAL_SD+INI_DIR+"/mtc-bt.ini";
+  private static final String QUICKDIAL_SECTION = "quickdial";
+  private final static String TAG = "xposed-mtc-bt";
 		
   @Override
   public void handleLoadPackage(LoadPackageParam lpparam) throws Throwable {
@@ -68,7 +80,6 @@ public class Main implements IXposedHookLoadPackage {
       @Override
       protected Object replaceHookedMethod(MethodHookParam param) throws Throwable {
         Log.d(TAG,"updatePhoneBookFirstChar, phoneBookSorted="+phoneBookSorted);
-        btActivity = (Activity)param.thisObject;
         if (!phoneBookSorted)
           XposedHelpers.callMethod(param.thisObject, "assortPhoneBook");
         @SuppressWarnings("unchecked")
@@ -89,6 +100,25 @@ public class Main implements IXposedHookLoadPackage {
         XposedHelpers.setObjectField(param.thisObject, "phoneBookFirstChar", phoneBookFirstChar);
         Log.d(TAG,"updatePhoneBookFirstChar OK");
         return null;
+      }
+    };
+    
+    // BlueToothActivity.onCreate(Bundle)
+    XC_MethodHook onCreate = new XC_MethodHook() {
+        
+      @Override
+      protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+        Log.d(TAG,"onCreate");
+        btActivity = (Activity)param.thisObject;
+        // показать версию модуля
+        try 
+        {
+     	  context = btActivity.createPackageContext(getClass().getPackage().getName(), Context.CONTEXT_IGNORE_SECURITY);
+     	  String version = context.getString(R.string.app_version_name);
+          Log.d(TAG,"version="+version);
+     	} catch (NameNotFoundException e) {}
+        // настройки быстрого набора
+        readSettings();
       }
     };
     
@@ -225,7 +255,6 @@ public class Main implements IXposedHookLoadPackage {
           curNumber = curValues[1];
           if (!curName.isEmpty()) curChar = Character.toUpperCase(curName.charAt(0)); 
         }
-        Log.d(TAG,curChar+": curName="+curName+", curNumber="+curNumber);
     	// предыдущая строка
     	Character prevChar = ' ';
     	String prevName = "";
@@ -238,7 +267,6 @@ public class Main implements IXposedHookLoadPackage {
             prevName = prevValues[0];
             if (!prevName.isEmpty()) prevChar = Character.toUpperCase(prevName.charAt(0));
           }
-          Log.d(TAG,prevChar+": prevName="+prevName);
     	}
         // отображаемые элементы
         int char_id = res.getIdentifier("tv_firstchar", "id", btActivity.getPackageName());
@@ -279,14 +307,49 @@ public class Main implements IXposedHookLoadPackage {
       }
     };
     
+    // DialFragment.init()
+    XC_MethodHook init = new XC_MethodHook() {
+	           
+      @Override
+      protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+        Log.d(TAG,"init");
+    	int button_id;
+        View button;
+        String number;
+        dialFragment = param.thisObject;
+        Resources res = btActivity.getResources();
+        // покажем mac-адрес телефона
+        long lmac_address = (long)XposedHelpers.callMethod(btActivity, "getConnectPhoneMACaddr");
+        String mac_address = Long.toHexString(lmac_address);
+        Log.d(TAG,"mac_address="+mac_address);
+        // на какие кнопки нужно повесить long-click
+        for (int i=1; i<=9; i++)
+        {
+          number = getQuickDial(i);
+          button_id = res.getIdentifier("bt_num"+i, "id", btActivity.getPackageName());
+          button = btActivity.findViewById(button_id);
+          if ((button != null) && (!number.isEmpty()))
+          {
+            Log.d(TAG,"set long click for "+i);
+            button.setLongClickable(true);
+            button.setOnLongClickListener(buttonLongClick);
+            button.setTag((Object)i);
+          }
+        }
+        Log.d(TAG,"init OK");
+      }
+    };
+    
     // begin hooks
     if (!lpparam.packageName.equals("com.microntek.bluetooth")) return;
     XposedHelpers.findAndHookMethod("com.microntek.bluetooth.notification.btNotificationReceiver", lpparam.classLoader, "getNumName", List.class, String.class, getNumName);
+    XposedHelpers.findAndHookMethod("com.microntek.bluetooth.BlueToothActivity", lpparam.classLoader, "onCreate", Bundle.class, onCreate);
     XposedHelpers.findAndHookMethod("com.microntek.bluetooth.BlueToothActivity", lpparam.classLoader, "getNameOfNumbers", String.class, getNameOfNumbers);
     XposedHelpers.findAndHookMethod("com.microntek.bluetooth.BlueToothActivity", lpparam.classLoader, "assortPhoneBook", assortPhoneBook);
     XposedHelpers.findAndHookMethod("com.microntek.bluetooth.BlueToothActivity", lpparam.classLoader, "updatePhoneBookFirstChar", updatePhoneBookFirstChar);
     XposedHelpers.findAndHookMethod("com.microntek.bluetooth.BlueToothActivity", lpparam.classLoader, "onDestroy", onDestroy);
     XposedHelpers.findAndHookMethod("com.microntek.bluetooth.ui.PhonebookFragment$PhoneBookAdapter", lpparam.classLoader, "getView", int.class, View.class, ViewGroup.class, getView);
+    XposedHelpers.findAndHookMethod("com.microntek.bluetooth.ui.DialFragment", lpparam.classLoader, "init", init);
     // ищем используемый Ui
     for (int i=1; i<=5; i++)
     {
@@ -299,7 +362,41 @@ public class Main implements IXposedHookLoadPackage {
       catch (Error e) {}
     }
     Log.d(TAG,"com.microntek.bluetooth OK");
- }
+  }
+  
+  // чтение настроек
+  private void readSettings()
+  {
+    try
+    {
+      Log.d(TAG,"inifile load from "+INI_FILE_NAME);
+      props.clear(); 
+      props.loadFromFile(INI_FILE_NAME);
+    } 
+    catch (Exception e) 
+    {
+      Log.e(TAG,e.getMessage());
+    }
+  }
+  
+  private String getQuickDial(int index)
+  {
+    String number = ""; 
+    String mac_address = null;
+    long lmac_address = (long)XposedHelpers.callMethod(btActivity, "getConnectPhoneMACaddr");
+    if (lmac_address > 0)
+    {
+      mac_address = Long.toHexString(lmac_address);
+      // локальный набор для подключенного телефона
+      number = props.getValue(QUICKDIAL_SECTION+"."+mac_address, Integer.toString(index), "");
+    }
+    if (number.isEmpty())
+    {
+      // глобальный список
+      number = props.getValue(QUICKDIAL_SECTION, Integer.toString(index), "");
+    }
+    return number;
+  }
   
   // поиск номера в списке контактов
   private String findNumber(List<String> phoneBook, String number)
@@ -361,7 +458,28 @@ public class Main implements IXposedHookLoadPackage {
       }
     }
   };
-
+  
+  private OnLongClickListener buttonLongClick = new OnLongClickListener()
+  {
+    public boolean onLongClick(View v)
+    {
+      int index = (int)v.getTag();
+      Log.d(TAG,"long click "+index);
+      String number = getQuickDial(index);
+      // проверка пустого номера
+      if (number.isEmpty()) return false;
+      StringBuffer dialoutNumbers = (StringBuffer)XposedHelpers.getObjectField(dialFragment, "dialoutNumbers");
+      // если ничего не введено
+      if (dialoutNumbers.length() > 0) return false;
+      // добавляем номер телефона в набор
+      dialoutNumbers.append(number);
+      XposedHelpers.setObjectField(dialFragment, "dialoutNumbers", dialoutNumbers);
+      // звонок
+      XposedHelpers.callMethod(dialFragment, "dial");
+      return true;
+    }
+  };
+  
   private static char decodeChar(int index)
   {
     if (index < enabledChars.size())
