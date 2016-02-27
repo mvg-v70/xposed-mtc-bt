@@ -31,7 +31,10 @@ public class Main implements IXposedHookLoadPackage {
   private final static int NUMBER_LEN = 10;
   private static Activity btActivity;
   private static Context context;
+  // KGL == 1, KLD,JY == 0
+  private static int mUiType = 0;
   private static boolean phoneBookSorted = false;
+  private static boolean afterSync = false;
   private static Object phonebookFragment;
   private static Object dialFragment;
   private static keyboardDialog kbDialog = null;
@@ -110,6 +113,7 @@ public class Main implements IXposedHookLoadPackage {
       protected void afterHookedMethod(MethodHookParam param) throws Throwable {
         Log.d(TAG,"onCreate");
         btActivity = (Activity)param.thisObject;
+        afterSync = false;
         // показать версию модуля
         try 
         {
@@ -117,6 +121,9 @@ public class Main implements IXposedHookLoadPackage {
      	  String version = context.getString(R.string.app_version_name);
           Log.d(TAG,"version="+version);
      	} catch (NameNotFoundException e) {}
+        Object mUi = XposedHelpers.getObjectField(param.thisObject, "mUi");
+        mUiType = (int)XposedHelpers.callMethod(mUi, "getUiType");
+        Log.d(TAG,"UiType="+mUiType);
         // настройки быстрого набора
         readSettings();
       }
@@ -129,17 +136,26 @@ public class Main implements IXposedHookLoadPackage {
       protected void afterHookedMethod(MethodHookParam param) throws Throwable {
         Log.d(TAG,"onDestroy");
         phoneBookSorted = false;
+        afterSync = false;
       }
     };
     
-    // PreferenceProc.assortPhoneBook()
+    // BlueToothActivity.assortPhoneBook()
     XC_MethodReplacement assortPhoneBook = new XC_MethodReplacement() {
         
-      @Override
+      @SuppressWarnings("unchecked")
+	  @Override
       protected Object replaceHookedMethod(MethodHookParam param) throws Throwable {
         Log.d(TAG,"assortPhoneBook");
-        @SuppressWarnings("unchecked")
-        List<String> phoneBookList = (List<String>)XposedHelpers.getObjectField(param.thisObject, "phoneBookList");
+        List<String> phoneBookList;
+        if (afterSync)
+        {
+          // возьмем список из mBtDevice после синхронизации контактов
+          Object mBtDevice = XposedHelpers.getObjectField(param.thisObject, "mBtDevice");
+          phoneBookList = (List<String>)XposedHelpers.getObjectField(mBtDevice, "reportPhonebookList");
+        }
+        else
+          phoneBookList = (List<String>)XposedHelpers.getObjectField(btActivity, "phoneBookList");
         Log.d(TAG,"phoneBookList.size="+phoneBookList.size());
         if (phoneBookList.size() == 0) return null;
         // отсортированный список
@@ -175,6 +191,7 @@ public class Main implements IXposedHookLoadPackage {
         // устанавливаем отсортированный список
         XposedHelpers.setObjectField(param.thisObject, "phoneBookList", phoneBookListSorted);
         phoneBookSorted = true;
+        afterSync = false;
         Log.d(TAG,"sorted="+phoneBookSorted);
         return null;
       }
@@ -322,11 +339,19 @@ public class Main implements IXposedHookLoadPackage {
         long lmac_address = (long)XposedHelpers.callMethod(btActivity, "getConnectPhoneMACaddr");
         String mac_address = Long.toHexString(lmac_address);
         Log.d(TAG,"mac_address="+mac_address);
+        Log.d(TAG,"mUiType="+mUiType);
         // на какие кнопки нужно повесить long-click
         for (int i=1; i<=9; i++)
         {
           number = getQuickDial(i);
-          button_id = res.getIdentifier("bt_num"+i, "id", btActivity.getPackageName());
+          if (mUiType == 1)
+            // KGL
+            button_id = res.getIdentifier("bt_num"+i, "id", btActivity.getPackageName());
+          else if (mUiType == 0)
+            // KLD & others
+            button_id = res.getIdentifier("dial_num"+i, "id", btActivity.getPackageName());
+          else
+            button_id = 0;
           button = btActivity.findViewById(button_id);
           if ((button != null) && (!number.isEmpty()))
           {
@@ -340,6 +365,26 @@ public class Main implements IXposedHookLoadPackage {
       }
     };
     
+    // BTDevice.syncPhonebook()
+    XC_MethodHook syncPhonebook = new XC_MethodHook() {
+        
+      @Override
+      protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+        Log.d(TAG,"syncPhonebook");
+      }
+    };
+    
+    // BTDevice.syncPhonebookEnd()
+    XC_MethodHook syncPhonebookEnd = new XC_MethodHook() {
+        
+      @Override
+      protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+        Log.d(TAG,"syncPhonebookEnd");
+        afterSync = true;
+      }
+    };
+
+    
     // begin hooks
     if (!lpparam.packageName.equals("com.microntek.bluetooth")) return;
     XposedHelpers.findAndHookMethod("com.microntek.bluetooth.notification.btNotificationReceiver", lpparam.classLoader, "getNumName", List.class, String.class, getNumName);
@@ -350,6 +395,8 @@ public class Main implements IXposedHookLoadPackage {
     XposedHelpers.findAndHookMethod("com.microntek.bluetooth.BlueToothActivity", lpparam.classLoader, "onDestroy", onDestroy);
     XposedHelpers.findAndHookMethod("com.microntek.bluetooth.ui.PhonebookFragment$PhoneBookAdapter", lpparam.classLoader, "getView", int.class, View.class, ViewGroup.class, getView);
     XposedHelpers.findAndHookMethod("com.microntek.bluetooth.ui.DialFragment", lpparam.classLoader, "init", init);
+    XposedHelpers.findAndHookMethod("com.microntek.bluetooth.BTDevice", lpparam.classLoader, "syncPhonebook", syncPhonebook);
+    XposedHelpers.findAndHookMethod("com.microntek.bluetooth.BTDevice", lpparam.classLoader, "syncPhonebookEnd", syncPhonebookEnd);
     // ищем используемый Ui
     for (int i=1; i<=5; i++)
     {
@@ -475,7 +522,12 @@ public class Main implements IXposedHookLoadPackage {
       dialoutNumbers.append(number);
       XposedHelpers.setObjectField(dialFragment, "dialoutNumbers", dialoutNumbers);
       // звонок
-      XposedHelpers.callMethod(dialFragment, "dial");
+      if (mUiType == 1)
+      	// KGL
+        XposedHelpers.callMethod(dialFragment, "dial");
+      else
+    	// KLD & others
+        XposedHelpers.callMethod(dialFragment, "dialAnswer");
       return true;
     }
   };
