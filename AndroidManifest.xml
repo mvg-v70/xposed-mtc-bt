@@ -1,11 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.mvgv70.xposed_mtc_bt"
-    android:versionCode="14"
+    android:versionCode="230"
     android:versionName="@string/app_version_name" >
 
     <uses-sdk
-        android:minSdkVersion="17"
-        android:targetSdkVersion="21" />
+        android:minSdkVersion="19"
+        android:targetSdkVersion="19" />
 
     <application
         android:allowBackup="true"
